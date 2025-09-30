@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 DB_NAME = 'tg_bot.db'
 
 async def init_db():
-    """Инициализирует базу данных, создавая необходимые таблицы."""
+
     try:
         async with aiosqlite.connect(DB_NAME) as db:
             db.row_factory = aiosqlite.Row
@@ -33,7 +33,8 @@ async def init_db():
                     count INTEGER NOT NULL,
                     discount INTEGER NOT NULL DEFAULT 0,
                     genre TEXT,
-                    region TEXT
+                    region TEXT,
+                    image_urls TEXT
                 )
             ''')
             await db.execute('''
@@ -47,7 +48,7 @@ async def init_db():
                     FOREIGN KEY (key_id) REFERENCES steam_keys(id)
                 )
             ''')
-            # Добавление вашего ID как администратора по умолчанию
+
             await db.execute('INSERT OR IGNORE INTO admins (tg_id, name) VALUES (?, ?)', (1155154067, 'YourName'))
             await db.commit()
             logger.info("Database initialized successfully")
