@@ -5,7 +5,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 async def add_steam_key_into_db(game_name, st_key, price, count, genre=None, region=None, image_urls=None):
-    """Добавляет Steam ключ в базу данных."""
     try:
         async with aiosqlite.connect('tg_bot.db') as db:
             await db.execute('''
@@ -124,7 +123,6 @@ async def show_all_games():
         return False, f"Ошибка получения игр: {str(e)}", []
 
 async def filter_games_by_price(price_limit):
-    """Фильтрует игры по цене с учётом скидок."""
     try:
         async with aiosqlite.connect('tg_bot.db') as db:
             db.row_factory = aiosqlite.Row
@@ -161,7 +159,7 @@ async def filter_games_by_price(price_limit):
         return False, f"Ошибка фильтрации игр: {str(e)}", []
 
 async def filter_games_by_genre(genre):
-    """Фильтрует игры по жанру."""
+
     try:
         async with aiosqlite.connect('tg_bot.db') as db:
             db.row_factory = aiosqlite.Row
