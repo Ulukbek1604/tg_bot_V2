@@ -31,7 +31,7 @@ async def remove_admin(tg_id: int):
             if admin:
                 await db.execute('DELETE FROM admins WHERE tg_id = ?', (tg_id,))
                 await db.commit()
-                return True, f"Администратор {admin['name']} (ID: {tg_id}) удалён."
+                return True, f"Администратор {admin[0]} (ID: {tg_id}) удалён."
             return False, "Администратор не найден."
     except Exception as e:
         return False, f"Ошибка при удалении администратора: {e}"

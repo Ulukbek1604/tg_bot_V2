@@ -9,6 +9,7 @@ from bot_apps import keyboards as kb
 from bot_apps import db_user
 from bot_apps import db_admin
 import aiosqlite
+from aiogram.filters.command import CommandObject
 
 logging.basicConfig(level=logging.INFO, filename='bot.log')
 logger = logging.getLogger(__name__)
@@ -701,41 +702,62 @@ async def add_admin(message: Message):
         await message.answer("Произошла ошибка при добавлении админа.")
 
 
-@rt.message(Command('remove_admin'))
-async def remove_admin(message: Message):
-    """Обработчик команды /remove_admin."""
-    logger.info(f"Команда /remove_admin от пользователя {message.from_user.id}")
-    if not await db_admin.is_admin(message.from_user.id):
-        await message.answer(
-            html.escape("Эта команда доступна только администратору."),
-            reply_markup=kb.get_main_menu(),
-            parse_mode='HTML'
-        )
-        return
+@rt.message(Command("remove_admin"))
+async def remove_admin(message: Message, command: CommandObject):
+    """Обработчик команды /remove_admin <tg_id>"""
+    user_id = message.from_user.id if message.from_user else None
+    logger.info("Команда /remove_admin от пользователя %s, text=%r", user_id, message.text)
+
+    # 1) Проверка прав
     try:
-        args = shlex.split(message.text)[1:]
-        if not args:
+        if not user_id or not await db_admin.is_admin(user_id):
             await message.answer(
-                html.escape("Формат: /remove_admin 'ID'"),
-                parse_mode='HTML'
+                html.escape("Эта команда доступна только администратору."),
+                reply_markup=kb.get_main_menu(),
+                parse_mode="HTML",
             )
             return
-        tg_id = int(args[0])
-        success, msg = await db_admin.remove_admin(tg_id)
-        await message.answer(
-            html.escape(msg),
-            parse_mode='HTML'
-        )
-    except ValueError:
-        await message.answer(
-            html.escape("ID должен быть числом"),
-            parse_mode='HTML'
-        )
     except Exception as e:
-        logger.error(f"Ошибка в обработчике /remove_admin: {e}", exc_info=True)
+        logger.exception("Ошибка при проверке прав администратора: %s", e)
+        await message.answer("Не удалось проверить права администратора.")
+        return
+
+    # 2) Парсинг аргумента (без shlex)
+    raw_args = (command.args or "").strip()  # всё, что после /remove_admin
+    if not raw_args:
+        await message.answer(html.escape("Формат: /remove_admin <ID>"), parse_mode="HTML")
+        return
+
+    # Удаляем обычные пробелы и невидимые символы по краям
+    cleaned = "".join(ch for ch in raw_args if ch.isdigit())
+    # Если были пробелы внутри (типа "709 789 903"), можно убрать их:
+    if not cleaned:
+        await message.answer(html.escape("ID должен быть числом"), parse_mode="HTML")
+        return
+
+    try:
+        tg_id = int(cleaned)
+    except Exception:
+        await message.answer(html.escape("ID должен быть числом"), parse_mode="HTML")
+        return
+
+    # 3) Вызов БД с аккуратной обработкой ошибок
+    try:
+        result = await db_admin.remove_admin(tg_id)
+        # допускаем, что функция может вернуть строку, булево, или кортеж
+        if isinstance(result, tuple) and len(result) >= 2:
+            success, msg = bool(result[0]), str(result[1])
+        elif isinstance(result, bool):
+            success, msg = result, ("Админ удалён" if result else "Админ не найден или не удалён")
+        else:
+            # что бы ни вернули — приведём к строке
+            success, msg = True, str(result)
+
+        await message.answer(html.escape(msg), parse_mode="HTML")
+    except Exception as e:
+        logger.exception("Ошибка в обработчике /remove_admin при удалении: %s", e)
+        # Можно отдать человеку (только админу) короткую диагностику
         await message.answer("Произошла ошибка при удалении админа.")
-
-
 @rt.message(Command('analytics'))
 async def analytics(message: Message):
     """Обработчик команды /analytics."""
