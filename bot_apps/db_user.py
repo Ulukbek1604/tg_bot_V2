@@ -1,7 +1,7 @@
 import aiosqlite
 import html
 import logging
-
+import re
 logger = logging.getLogger(__name__)
 
 async def add_steam_key_into_db(game_name, st_key, price, count, genre=None, region=None, image_urls=None):
@@ -196,12 +196,30 @@ async def filter_games_by_genre(genre):
         return False, f"Ошибка фильтрации игр: {str(e)}", []
 
 async def search_games(query):
-    """Поиск игр по названию."""
+    """Поиск игр по названию или по ID."""
     try:
         async with aiosqlite.connect('tg_bot.db') as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute('SELECT * FROM steam_keys WHERE game_name LIKE ? AND count > 0', (f'%{query}%',))
+
+            # Попробуем определить, является ли query числом (ID)
+            query_clean = query.strip()
+            if re.fullmatch(r'\d+', query_clean):  # Только цифры → это ID
+                game_id = int(query_clean)
+                cursor = await db.execute(
+                    'SELECT * FROM steam_keys WHERE id = ? AND count > 0',
+                    (game_id,)
+                )
+                logger.info(f"Поиск игры по ID: {game_id}")
+            else:
+                # Поиск по названию (частичное совпадение)
+                cursor = await db.execute(
+                    'SELECT * FROM steam_keys WHERE game_name LIKE ? AND count > 0',
+                    (f'%{query_clean}%',)
+                )
+                logger.info(f"Поиск игр по названию: '{query_clean}'")
+
             games = await cursor.fetchall()
+
             if not games:
                 logger.info(f"Игры по запросу '{query}' не найдены")
                 return False, "Игры не найдены.", []
@@ -223,11 +241,16 @@ async def search_games(query):
                     'text': game_text,
                     'image_urls': game['image_urls'] or ''
                 })
+
             logger.info(f"Найдено {len(games)} игр по запросу '{query}'")
             return True, "Игры найдены.", result
+
+    except ValueError as e:
+        logger.error(f"Ошибка преобразования ID: {e}", exc_info=True)
+        return False, "Некорректный ID игры.", []
     except Exception as e:
         logger.error(f"Ошибка поиска игр: {e}", exc_info=True)
-        return False, f"Ошибка поиска игр: {str(e)}", []
+        return False, f"Ошибка поиска: {str(e)}", []
 
 async def create_order(user_id, game_id):
     """Создаёт заказ для пользователя."""
