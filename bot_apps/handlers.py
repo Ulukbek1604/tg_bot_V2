@@ -197,30 +197,33 @@ async def admin_manage_users_callback(callback: CallbackQuery):
 
 
 @rt.callback_query(F.data == "admin_analytics")
-async def admin_analytics_callback(callback: CallbackQuery):
-    """Обработчик кнопки 'Аналитика'."""
+async def admin_analytics(callback: CallbackQuery):
+    """
+    Обработчик кнопки 'Аналитика' в админ-меню.
+    Показывает краткую сводку + подменю аналитики.
+    """
     logger.info(f"Нажата кнопка 'Аналитика' от пользователя {callback.from_user.id}")
     try:
         if not await db_admin.is_admin(callback.from_user.id):
             await callback.answer("Эта команда доступна только администратору.", show_alert=True)
             return
-        success, msg, data = await db_user.get_analytics()
-        if success and data:
-            await callback.message.answer(
-                html.escape(msg + "\n\n" + "\n".join(data)),
-                reply_markup=kb.get_main_menu(),
-                parse_mode='HTML'
-            )
-        else:
-            await callback.message.answer(
-                html.escape(msg),
-                reply_markup=kb.get_main_menu(),
-                parse_mode='HTML'
-            )
+
+        ok_global, text_global, _ = await db_admin.get_global_order_stats()
+        if not ok_global:
+            text_global = "Не удалось получить общую статистику."
+
+        # можно через edit_text, чтобы заменить текст в том же сообщении
+        await callback.message.edit_text(
+            text_global + "\n\nВыберите тип аналитики:",
+            reply_markup=kb.get_admin_analytics_menu(),
+            parse_mode="HTML"
+        )
         await callback.answer()
+
     except Exception as e:
         logger.error(f"Ошибка в обработчике admin_analytics: {e}", exc_info=True)
         await callback.answer("Произошла ошибка.", show_alert=True)
+
 
 
 @rt.message(Command('buy'))
@@ -228,6 +231,7 @@ async def buy(message: Message, bot: Bot):
     """Обработчик команды /buy."""
     logger.info(f"Команда /buy от пользователя {message.from_user.id}")
     try:
+        # разбираем аргументы
         args = shlex.split(message.text)[1:]
         if not args:
             await message.answer(
@@ -235,32 +239,55 @@ async def buy(message: Message, bot: Bot):
                 parse_mode='HTML'
             )
             return
-        game_id = int(args[0])
-        success, msg, order_data = await db_user.create_order(message.from_user.id, game_id)
-        if success and order_data:
+
+        try:
+            game_id = int(args[0])
+        except ValueError:
             await message.answer(
-                html.escape(
-                    f"Заказ #{order_data['order_id']} на '{order_data['game_name']}' создан!\n{PAYMENT_DETAILS}"),
+                html.escape("ID должен быть числом"),
                 parse_mode='HTML'
             )
+            return
+
+        # создаём заказ
+        success, msg, order_data = await db_user.create_order(message.from_user.id, game_id)
+
+        # если не получилось — показываем ошибку и ВЫХОД
+        if not success or not order_data:
+            await message.answer(
+                html.escape(msg),
+                parse_mode='HTML'
+            )
+            return
+
+        # если всё ок — отправляем реквизиты пользователю
+        await message.answer(
+            html.escape(
+                f"Заказ #{order_data['order_id']} на '{order_data['game_name']}' создан!\n{PAYMENT_DETAILS}"
+            ),
+            parse_mode='HTML'
+        )
+
+        # уведомляем админов (если тут что-то упадёт — юзеру уже всё ок показали)
+        try:
             admin_ids = await get_admin_ids()
             for admin_id in admin_ids:
-                await bot.send_message(
-                    admin_id,
-                    html.escape(
-                        f"Новый заказ #{order_data['order_id']}!\nПользователь: @{message.from_user.username or message.from_user.id}\nИгра: {order_data['game_name']}"),
-                    reply_markup=kb.get_order_actions_keyboard(order_data['order_id']),
-                    parse_mode='HTML'
-                )
-        await message.answer(
-            html.escape(msg),
-            parse_mode='HTML'
-        )
-    except ValueError:
-        await message.answer(
-            html.escape("ID должен быть числом"),
-            parse_mode='HTML'
-        )
+                try:
+                    await bot.send_message(
+                        admin_id,
+                        html.escape(
+                            f"Новый заказ #{order_data['order_id']}!\n"
+                            f"Пользователь: @{message.from_user.username or message.from_user.id}\n"
+                            f"Игра: {order_data['game_name']}"
+                        ),
+                        reply_markup=kb.get_order_actions_keyboard(order_data['order_id']),
+                        parse_mode='HTML'
+                    )
+                except Exception as e:
+                    logger.error(f"Не удалось отправить уведомление админу {admin_id}: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Ошибка при отправке уведомлений администраторам: {e}", exc_info=True)
+
     except Exception as e:
         logger.error(f"Ошибка в обработчике /buy: {e}", exc_info=True)
         await message.answer("Произошла ошибка при покупке.")
@@ -271,37 +298,63 @@ async def buy_callback(callback: CallbackQuery, bot: Bot):
     """Обработчик покупки через callback."""
     logger.info(f"Покупка {callback.data} от пользователя {callback.from_user.id}")
     try:
-        game_id = int(callback.data.replace("buy_", ""))
-        success, msg, order_data = await db_user.create_order(callback.from_user.id, game_id)
-        if success and order_data:
+        # парсим ID игры
+        try:
+            game_id = int(callback.data.replace("buy_", ""))
+        except ValueError:
             await callback.message.answer(
-                html.escape(
-                    f"Заказ #{order_data['order_id']} на '{order_data['game_name']}' создан!\n{PAYMENT_DETAILS}"),
+                html.escape("Неверный ID игры"),
                 parse_mode='HTML'
             )
+            await callback.answer()
+            return
+
+        # создаём заказ
+        success, msg, order_data = await db_user.create_order(callback.from_user.id, game_id)
+
+        # если ошибка — говорим и выходим
+        if not success or not order_data:
+            await callback.message.answer(
+                html.escape(msg),
+                parse_mode='HTML'
+            )
+            await callback.answer()
+            return
+
+        # если всё ок — отправляем реквизиты
+        await callback.message.answer(
+            html.escape(
+                f"Заказ #{order_data['order_id']} на '{order_data['game_name']}' создан!\n{PAYMENT_DETAILS}"
+            ),
+            parse_mode='HTML'
+        )
+
+        # уведомляем админов отдельно
+        try:
             admin_ids = await get_admin_ids()
             for admin_id in admin_ids:
-                await bot.send_message(
-                    admin_id,
-                    html.escape(
-                        f"Новый заказ #{order_data['order_id']}!\nПользователь: @{callback.from_user.username or callback.from_user.id}\nИгра: {order_data['game_name']}"),
-                    reply_markup=kb.get_order_actions_keyboard(order_data['order_id']),
-                    parse_mode='HTML'
-                )
-        await callback.message.answer(
-            html.escape(msg),
-            parse_mode='HTML'
-        )
+                try:
+                    await bot.send_message(
+                        admin_id,
+                        html.escape(
+                            f"Новый заказ #{order_data['order_id']}!\n"
+                            f"Пользователь: @{callback.from_user.username or callback.from_user.id}\n"
+                            f"Игра: {order_data['game_name']}"
+                        ),
+                        reply_markup=kb.get_order_actions_keyboard(order_data['order_id']),
+                        parse_mode='HTML'
+                    )
+                except Exception as e:
+                    logger.error(f"Не удалось отправить уведомление админу {admin_id}: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Ошибка при отправке уведомлений администраторам: {e}", exc_info=True)
+
         await callback.answer()
-    except ValueError:
-        await callback.message.answer(
-            html.escape("Неверный ID игры"),
-            parse_mode='HTML'
-        )
-        await callback.answer()
+
     except Exception as e:
         logger.error(f"Ошибка в обработчике покупки: {e}", exc_info=True)
         await callback.answer("Произошла ошибка при покупке.", show_alert=True)
+
 
 
 @rt.callback_query(F.data.startswith("confirm_order_"))
@@ -407,24 +460,62 @@ async def pending_orders(message: Message):
 @rt.message(F.photo)
 async def handle_payment_screenshot(message: Message, bot: Bot):
     """Обработчик скриншотов оплаты от пользователей."""
-    logger.info(f"Получен скриншот оплаты от пользователя {message.from_user.id}")
+    user_id = message.from_user.id
+    logger.info(f"Получен скриншот оплаты от пользователя {user_id}")
     try:
         admin_ids = await get_admin_ids()
-        for admin_id in admin_ids:
-            await bot.send_photo(
-                admin_id,
-                photo=message.photo[-1].file_id,
-                caption=html.escape(
-                    f"Скриншот оплаты от пользователя @{message.from_user.username or message.from_user.id}")
+        if not admin_ids:
+            logger.warning("Не найдено ни одного администратора для отправки скриншота.")
+            await message.answer(
+                html.escape(
+                    "Скриншот получен, но администраторы пока не настроены.\n"
+                    "Напишите, пожалуйста, в поддержку."
+                ),
+                reply_markup=kb.get_main_menu(),
+                parse_mode="HTML"
             )
+            return
+
+        errors = 0
+        for admin_id in admin_ids:
+            try:
+                await bot.send_photo(
+                    admin_id,
+                    photo=message.photo[-1].file_id,
+                    caption=html.escape(
+                        f"Скриншот оплаты от пользователя "
+                        f"@{message.from_user.username or message.from_user.id}"
+                    )
+                )
+            except Exception as e:
+                errors += 1
+                logger.error(
+                    f"Ошибка отправки скриншота админу {admin_id}: {e}",
+                    exc_info=True
+                )
+
+        # Пользователю не обязательно знать, что одному админу не ушло
+        if errors == 0:
+            text = "Скриншот отправлен администратору. Ожидайте подтверждения."
+        else:
+            text = (
+                "Скриншот отправлен, но не всем администраторам удалось доставить.\n"
+                "Ожидайте подтверждения."
+            )
+
         await message.answer(
-            html.escape("Скриншот отправлен администратору. Ожидайте подтверждения."),
+            html.escape(text),
             reply_markup=kb.get_main_menu(),
-            parse_mode='HTML'
+            parse_mode="HTML"
         )
+
     except Exception as e:
         logger.error(f"Ошибка в обработчике скриншотов: {e}", exc_info=True)
-        await message.answer("Произошла ошибка при отправке скриншота.")
+        await message.answer(
+            "Произошла ошибка при отправке скриншота.",
+            reply_markup=kb.get_main_menu()
+        )
+
 
 
 @rt.message(Command('add_product'))
@@ -1178,3 +1269,198 @@ async def search_query(message: Message):
     except Exception as e:
         logger.error(f"Ошибка в обработчике поиска: {e}", exc_info=True)
         await message.answer("Произошла ошибка при поиске.")
+# --- АНАЛИТИКА / СТАТИСТИКА ---
+
+
+@rt.callback_query(F.data == "admin_analytics")
+async def admin_analytics(callback: CallbackQuery):
+    """
+    Обработчик кнопки 'Аналитика' в админ-меню.
+    Показывает краткую сводку + подменю аналитики.
+    """
+    logger.info(f"Нажата кнопка 'Аналитика' от пользователя {callback.from_user.id}")
+    try:
+        if not await db_admin.is_admin(callback.from_user.id):
+            await callback.answer("Эта команда доступна только администратору.", show_alert=True)
+            return
+
+        ok_global, text_global, _ = await db_admin.get_global_order_stats()
+
+        if not ok_global:
+            text_global = "Не удалось получить общую статистику."
+
+        await callback.message.answer(
+            text_global + "\n\nВыберите тип аналитики:",
+            reply_markup=kb.get_admin_analytics_menu(),
+            parse_mode="HTML"
+        )
+        await callback.answer()
+
+    except Exception as e:
+        logger.error(f"Ошибка в обработчике admin_analytics: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка.", show_alert=True)
+
+
+# ---------- КНОПКА: Общая статистика ----------
+
+@rt.callback_query(F.data == "admin_analytics_global")
+async def admin_analytics_global(callback: CallbackQuery):
+    logger.info(f"Нажата 'Общая статистика' от {callback.from_user.id}")
+    try:
+        if not await db_admin.is_admin(callback.from_user.id):
+            await callback.answer("Эта команда доступна только администратору.", show_alert=True)
+            return
+
+        ok, text, _ = await db_admin.get_global_order_stats()
+        if not ok:
+            text = f"Не удалось получить статистику.\n{text}"
+
+        await callback.message.answer(text, parse_mode="HTML")
+        await callback.answer()
+
+    except Exception as e:
+        logger.error(f"Ошибка в обработчике admin_analytics_global: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка.", show_alert=True)
+
+
+# ---------- КНОПКА: По дням (7 дней) ----------
+
+@rt.callback_query(F.data == "admin_analytics_daily")
+async def admin_analytics_daily(callback: CallbackQuery):
+    logger.info(f"Нажата 'По дням' от {callback.from_user.id}")
+    try:
+        if not await db_admin.is_admin(callback.from_user.id):
+            await callback.answer("Эта команда доступна только администратору.", show_alert=True)
+            return
+
+        ok, text, _ = await db_admin.get_daily_order_stats(limit=7)
+        if not ok:
+            text = f"Не удалось получить статистику по дням.\n{text}"
+
+        await callback.message.answer(text, parse_mode="HTML")
+        await callback.answer()
+
+    except Exception as e:
+        logger.error(f"Ошибка в обработчике admin_analytics_daily: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка.", show_alert=True)
+
+
+# ---------- КНОПКА: По пользователю ----------
+
+@rt.callback_query(F.data == "admin_analytics_user")
+async def admin_analytics_user(callback: CallbackQuery):
+    """
+    При нажатии 'По пользователю' показываем список всех user_id
+    и по каждому: сколько заказов и статусы.
+    """
+    logger.info(f"Нажата 'По пользователю' от {callback.from_user.id}")
+    try:
+        if not await db_admin.is_admin(callback.from_user.id):
+            await callback.answer("Эта команда доступна только администратору.", show_alert=True)
+            return
+
+        ok, text, _ = await db_admin.get_users_overview()
+        if not ok:
+            text = f"Не удалось получить статистику по пользователям.\n{text}"
+
+        await callback.message.answer(text, parse_mode="HTML")
+        await callback.answer()
+
+    except Exception as e:
+        logger.error(f"Ошибка в обработчике admin_analytics_user: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка.", show_alert=True)
+
+@rt.message(Command("stats"))
+async def cmd_stats(message: Message):
+    """
+    /stats – общая статистика по заказам.
+    Только для администраторов.
+    """
+    user_id = message.from_user.id
+    logger.info(f"/stats от пользователя {user_id}")
+    try:
+        if not await db_admin.is_admin(user_id):
+            await message.answer("Эта команда доступна только администратору.")
+            return
+
+        ok, text, _ = await db_admin.get_global_order_stats()
+        if ok:
+            await message.answer(text, parse_mode="HTML")
+        else:
+            await message.answer(f"Не удалось получить статистику.\n{text}")
+
+    except Exception as e:
+        logger.error(f"Ошибка в команде /stats: {e}", exc_info=True)
+        await message.answer("Произошла ошибка при получении статистики.")
+
+
+@rt.message(Command("daily_stats"))
+async def cmd_daily_stats(message: Message, command: CommandObject):
+    """
+    /daily_stats [дней] – статистика по дням.
+    Пример: /daily_stats 5
+    По умолчанию 7 дней.
+    Только для администраторов.
+    """
+    user_id = message.from_user.id
+    logger.info(f"/daily_stats от пользователя {user_id} с аргументами: {command.args!r}")
+    try:
+        if not await db_admin.is_admin(user_id):
+            await message.answer("Эта команда доступна только администратору.")
+            return
+
+        days = 7
+        if command.args:
+            try:
+                days = int(command.args.split()[0])
+                if days <= 0:
+                    raise ValueError
+            except ValueError:
+                await message.answer("Некорректное число дней. Пример: /daily_stats 7")
+                return
+
+        ok, text, _ = await db_admin.get_daily_order_stats(limit=days)
+        if ok:
+            await message.answer(text, parse_mode="HTML")
+        else:
+            await message.answer(f"Не удалось получить статистику по дням.\n{text}")
+
+    except Exception as e:
+        logger.error(f"Ошибка в команде /daily_stats: {e}", exc_info=True)
+        await message.answer("Произошла ошибка при получении статистики по дням.")
+
+
+@rt.message(Command("user_stats"))
+async def cmd_user_stats(message: Message, command: CommandObject):
+    """
+    /user_stats <user_id> – статистика по конкретному пользователю (Telegram user_id).
+    Пример: /user_stats 1155154067
+    Только для администраторов.
+    """
+    admin_id = message.from_user.id
+    logger.info(f"/user_stats от пользователя {admin_id} с аргументами: {command.args!r}")
+    try:
+        if not await db_admin.is_admin(admin_id):
+            await message.answer("Эта команда доступна только администратору.")
+            return
+
+        if not command.args:
+            await message.answer("Использование: /user_stats <user_id>\nПример: /user_stats 1155154067")
+            return
+
+        try:
+            target_user_id = int(command.args.split()[0])
+        except ValueError:
+            await message.answer("user_id должен быть числом. Пример: /user_stats 1155154067")
+            return
+
+        ok, text, data = await db_admin.get_user_order_stats(target_user_id)
+        if ok:
+            await message.answer(text, parse_mode="HTML")
+        else:
+            await message.answer(f"Не удалось получить статистику пользователя.\n{text}")
+
+    except Exception as e:
+        logger.error(f"Ошибка в команде /user_stats: {e}", exc_info=True)
+        await message.answer("Произошла ошибка при получении статистики по пользователю.")
+

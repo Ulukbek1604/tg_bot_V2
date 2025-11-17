@@ -1,5 +1,6 @@
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
+
 def get_main_menu() -> ReplyKeyboardMarkup:
     """Создаёт главное меню."""
     keyboard = [
@@ -8,6 +9,7 @@ def get_main_menu() -> ReplyKeyboardMarkup:
         [KeyboardButton(text="Поддержка")]
     ]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=True)
+
 
 def get_admin_main_menu(is_admin: bool) -> InlineKeyboardMarkup | None:
     """Создаёт админ-меню, если пользователь — админ."""
@@ -18,6 +20,7 @@ def get_admin_main_menu(is_admin: bool) -> InlineKeyboardMarkup | None:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
+
 def get_catalog_menu() -> InlineKeyboardMarkup:
     """Создаёт меню каталога."""
     keyboard = [
@@ -27,6 +30,7 @@ def get_catalog_menu() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
+
 def get_catalog_choice_keyboard() -> InlineKeyboardMarkup:
     """Создаёт клавиатуру выбора каталога."""
     keyboard = [
@@ -35,6 +39,7 @@ def get_catalog_choice_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
+
 def get_filter_type_keyboard() -> InlineKeyboardMarkup:
     """Создаёт клавиатуру выбора типа фильтра."""
     keyboard = [
@@ -42,6 +47,7 @@ def get_filter_type_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="По жанру", callback_data="filter_by_genre")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
 
 def get_price_filter_keyboard() -> InlineKeyboardMarkup:
     """Создаёт клавиатуру для фильтров по цене."""
@@ -57,6 +63,7 @@ def get_price_filter_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
+
 def get_genre_filter_keyboard() -> InlineKeyboardMarkup:
     """Создаёт клавиатуру для фильтров по жанру."""
     keyboard = [
@@ -66,7 +73,7 @@ def get_genre_filter_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="Симулятор", callback_data="filter_genre_Симулятор"),
-            InlineKeyboardButton(text="Головоломка", callback_data="filter_genre_Головоломка")
+            InlineKeyboardButton(text="Головоломка", callback_data="filter_genре_Головоломка")
         ],
         [
             InlineKeyboardButton(text="Стратегия", callback_data="filter_genre_Стратегия"),
@@ -75,12 +82,14 @@ def get_genre_filter_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
+
 def get_game_actions_keyboard(game_id: int, item_type: str) -> InlineKeyboardMarkup:
     """Создаёт клавиатуру для действий с игрой."""
     keyboard = [
         [InlineKeyboardButton(text="Купить", callback_data=f"buy_{game_id}")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
 
 def get_order_actions_keyboard(order_id: int) -> InlineKeyboardMarkup:
     """Создаёт клавиатуру для действий с заказом (подтверждение/отмена)."""
@@ -89,6 +98,7 @@ def get_order_actions_keyboard(order_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Отменить", callback_data=f"cancel_order_{order_id}")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
 
 def get_admin_menu() -> InlineKeyboardMarkup:
     """Создаёт админ-меню."""
@@ -107,6 +117,30 @@ def get_admin_menu() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="Аналитика", callback_data="admin_analytics")
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def get_admin_analytics_menu() -> InlineKeyboardMarkup:
+    """
+    Подменю для аналитики:
+    - Общая статистика
+    - По дням
+    - По пользователю
+    """
+    keyboard = [
+        [
+            InlineKeyboardButton(text="Общая статистика", callback_data="admin_analytics_global")
+        ],
+        [
+            InlineKeyboardButton(text="По дням (7 дней)", callback_data="admin_analytics_daily")
+        ],
+        [
+            InlineKeyboardButton(text="По пользователю", callback_data="admin_analytics_user")
+        ],
+        [
+            InlineKeyboardButton(text="⬅ Назад", callback_data="admin_panel")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
