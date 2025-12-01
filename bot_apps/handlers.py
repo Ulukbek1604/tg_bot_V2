@@ -10,6 +10,7 @@ from bot_apps import db_user
 from bot_apps import db_admin
 import aiosqlite
 from aiogram.filters.command import CommandObject
+from aiogram import types
 
 logging.basicConfig(level=logging.INFO, filename='bot.log')
 logger = logging.getLogger(__name__)
@@ -1189,24 +1190,270 @@ async def search(message: Message):
     )
 
 
-@rt.message(F.text == 'Поддержка')
-async def support_button(message: Message):
-    """Обработчик кнопки 'Поддержка'."""
-    logger.info(f"Нажата кнопка 'Поддержка' от пользователя {message.from_user.id}")
-    await message.answer(
-        "Для связи с поддержкой напишите нам в @saintbakir или на email aisbeisfim@gmail.com",
-        reply_markup=kb.get_main_menu()
-    )
+# ---------- SUPPORT: замени старые хендлеры "Поддержка" и /support этим блоком ----------
 
+# Инициализация таблицы tickets (вызови init_support_db() при старте в main.py)
+async def init_support_db():
+    try:
+        async with aiosqlite.connect('tg_bot.db') as db:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS tickets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    admin_id INTEGER,
+                    status TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            await db.commit()
+        logger.info("init_support_db: таблица tickets готова")
+    except Exception as e:
+        logger.exception(f"init_support_db error: {e}")
 
-@rt.message(Command('support'))
-async def support(message: Message):
-    """Обработчик команды /support."""
-    logger.info(f"Команда /support от пользователя {message.from_user.id}")
-    await message.answer(
-        "Для связи с поддержкой напишите нам в @saintbakir или на email aisbeisfim@gmail.com.",
-        reply_markup=kb.get_main_menu()
-    )
+# Утилиты для работы с тикетами
+async def create_ticket(user_id: int) -> int:
+    async with aiosqlite.connect('tg_bot.db') as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("INSERT INTO tickets (user_id, status) VALUES (?, ?)", (user_id, "open"))
+        await db.commit()
+        return cur.lastrowid
+
+async def set_ticket_admin(ticket_id: int, admin_id: int):
+    async with aiosqlite.connect('tg_bot.db') as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute("UPDATE tickets SET admin_id = ?, status = 'accepted' WHERE id = ?", (admin_id, ticket_id))
+        await db.commit()
+
+async def close_ticket(ticket_id: int):
+    async with aiosqlite.connect('tg_bot.db') as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute("UPDATE tickets SET status = 'closed' WHERE id = ?", (ticket_id,))
+        await db.commit()
+
+async def get_ticket(ticket_id: int):
+    async with aiosqlite.connect('tg_bot.db') as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,))
+        return await cur.fetchone()
+
+async def find_active_ticket_by_user(user_id: int):
+    async with aiosqlite.connect('tg_bot.db') as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT id, admin_id FROM tickets WHERE user_id = ? AND status = 'accepted' ORDER BY id DESC LIMIT 1",
+            (user_id,))
+        row = await cur.fetchone()
+        return (row['id'], row['admin_id']) if row else None
+
+async def find_open_ticket_by_user(user_id: int):
+    async with aiosqlite.connect('tg_bot.db') as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT id, status FROM tickets WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user_id,))
+        return await cur.fetchone()
+
+async def find_active_ticket_by_admin(admin_id: int):
+    async with aiosqlite.connect('tg_bot.db') as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT id, user_id FROM tickets WHERE admin_id = ? AND status = 'accepted' ORDER BY id DESC LIMIT 1",
+            (admin_id,))
+        row = await cur.fetchone()
+        return (row['id'], row['user_id']) if row else None
+
+# Хендлер: создание тикета (заменяет старые обработчики)
+@rt.message(F.text)
+async def support_request_handler(message: Message):
+    """
+    Обрабатывает 'Поддержка' или команду '/support'.
+    Если текст не соответствует — возвращает управление другим хендлерам.
+    """
+    try:
+        text = (message.text or "").strip().lower()
+        if text not in ("поддержка", "/support"):
+            return  # не наш хендлер
+
+        user_id = message.from_user.id
+        logger.info(f"support_request_handler: запрос от {user_id}, text='{message.text}'")
+
+        # Проверяем существующий тикет
+        existing = await find_open_ticket_by_user(user_id)
+        if existing and existing['status'] in ('open', 'accepted'):
+            await message.answer(
+                "У вас уже есть открытый запрос. Подождите ответа администратора или завершите текущий чат командой /end.",
+                reply_markup=kb.get_main_menu()
+            )
+            return
+
+        ticket_id = await create_ticket(user_id)
+        await message.answer("Запрос отправлен в техподдержку. Ожидайте — администратор примет чат.", reply_markup=types.ReplyKeyboardRemove())
+        logger.info(f"support: создан тикет #{ticket_id} для {user_id}")
+
+        # Уведомляем админов (используется твоя get_admin_ids() или db_admin)
+        # если у тебя есть get_admin_ids() — он будет использован; иначе используй db_admin.get_admins() по своему коду
+        try:
+            admin_ids = await get_admin_ids()
+        except Exception:
+            admin_ids = []
+            logger.exception("Не удалось получить список админов через get_admin_ids()")
+
+        logger.info(f"support: admin_ids = {admin_ids}")
+        if not admin_ids:
+            await message.answer("Извините, сейчас нет доступных администраторов. Попробуйте позже.", reply_markup=kb.get_main_menu())
+            return
+
+        text_to_admin = (
+            f"🆕 Новый запрос поддержки — тикет #{ticket_id}\n"
+            f"Пользователь: <a href='tg://user?id={user_id}'>пользователь</a>\n"
+            "Нажмите «Принять», чтобы взять чат."
+        )
+        kb_accept = kb.support_admin_accept_kb(ticket_id)
+        for adm in admin_ids:
+            try:
+                await message.bot.send_message(adm, text_to_admin, reply_markup=kb_accept, parse_mode='HTML')
+                logger.info(f"support: уведомление админу {adm} отправлено (ticket #{ticket_id})")
+            except Exception as e:
+                logger.warning(f"support: не удалось уведомить админа {adm}: {e}")
+
+    except Exception as e:
+        logger.exception(f"support_request_handler error: {e}")
+        await message.answer("Произошла ошибка при создании запроса.", reply_markup=kb.get_main_menu())
+
+# Callback: принять тикет
+@rt.callback_query(F.data.startswith("support_accept:"))
+async def cb_support_accept(callback: CallbackQuery):
+    try:
+        admin_id = callback.from_user.id
+        if not await db_admin.is_admin(admin_id):
+            await callback.answer("Только админы могут принимать заявки.", show_alert=True)
+            return
+        ticket_id = int(callback.data.split(":", 1)[1])
+        ticket = await get_ticket(ticket_id)
+        if not ticket:
+            await callback.answer("Тикет не найден.", show_alert=True)
+            return
+        if ticket['status'] == 'accepted':
+            await callback.answer("Этот тикет уже принят другим админом.", show_alert=True)
+            return
+
+        await set_ticket_admin(ticket_id, admin_id)
+        user_id = ticket['user_id']
+
+        try:
+            await callback.message.edit_text(callback.message.text + f"\n\n✅ Принят админом <a href='tg://user?id={admin_id}'>здесь</a>.", parse_mode='HTML')
+        except Exception:
+            pass
+
+        await callback.answer("Вы приняли тикет.")
+        try:
+            await callback.bot.send_message(admin_id, f"Вы подключены к тикету #{ticket_id}. Чтобы завершить чат — нажмите кнопку или отправьте /end.", reply_markup=kb.support_in_chat_kb())
+        except Exception:
+            pass
+        try:
+            await callback.bot.send_message(user_id, "Админ принял ваш запрос. Вы можете писать сообщения в этот чат. Чтобы завершить — нажмите «Завершить чат» или отправьте /end.", reply_markup=kb.support_in_chat_kb())
+        except Exception:
+            pass
+
+    except Exception as e:
+        logger.exception(f"cb_support_accept error: {e}")
+        await callback.answer("Произошла ошибка.", show_alert=True)
+
+# Callback: отклонить тикет
+@rt.callback_query(F.data.startswith("support_reject:"))
+async def cb_support_reject(callback: CallbackQuery):
+    try:
+        admin_id = callback.from_user.id
+        if not await db_admin.is_admin(admin_id):
+            await callback.answer("Только админы могут отклонять заявки.", show_alert=True)
+            return
+        ticket_id = int(callback.data.split(":", 1)[1])
+        ticket = await get_ticket(ticket_id)
+        if not ticket:
+            await callback.answer("Тикет не найден.", show_alert=True)
+            return
+        try:
+            await callback.message.edit_text(callback.message.text + f"\n\n❌ Отклонён админом <a href='tg://user?id={admin_id}'>здесь</a>.", parse_mode='HTML')
+        except Exception:
+            pass
+        await callback.answer("Отклонено.")
+    except Exception as e:
+        logger.exception(f"cb_support_reject error: {e}")
+        await callback.answer("Произошла ошибка.", show_alert=True)
+
+# Callback: завершить чат
+@rt.callback_query(F.data == "support_end")
+async def cb_support_end(callback: CallbackQuery):
+    try:
+        user = callback.from_user
+        active_admin = await find_active_ticket_by_admin(user.id)
+        if active_admin:
+            ticket_id, client_id = active_admin
+            await close_ticket(ticket_id)
+            await callback.bot.send_message(client_id, "Чат завершён администратором.", reply_markup=kb.get_main_menu())
+            await callback.bot.send_message(user.id, "Вы завершили чат.", reply_markup=kb.get_main_menu())
+            await callback.answer("Чат завершён.")
+            return
+
+        active_client = await find_active_ticket_by_user(user.id)
+        if active_client:
+            ticket_id, admin_id = active_client
+            await close_ticket(ticket_id)
+            await callback.bot.send_message(admin_id, "Клиент завершил чат.", reply_markup=kb.get_main_menu())
+            await callback.bot.send_message(user.id, "Вы завершили чат.", reply_markup=kb.get_main_menu())
+            await callback.answer("Чат завершён.")
+            return
+
+        await callback.answer("У вас нет активных чатов.", show_alert=True)
+    except Exception as e:
+        logger.exception(f"cb_support_end error: {e}")
+        await callback.answer("Произошла ошибка.", show_alert=True)
+
+# Реле сообщений (админ <-> клиент)
+@rt.message()
+async def support_relay_messages(message: Message):
+    try:
+        user_id = message.from_user.id
+        text = (message.text or "").strip()
+
+        # 1) если админ отправляет сообщение
+        if await db_admin.is_admin(user_id):
+            active = await find_active_ticket_by_admin(user_id)
+            if not active:
+                return
+            ticket_id, client_id = active
+            if text.lower() == "/end":
+                await close_ticket(ticket_id)
+                await message.answer("Вы завершили чат.", reply_markup=kb.get_main_menu())
+                await message.bot.send_message(client_id, "Админ завершил чат.", reply_markup=kb.get_main_menu())
+                return
+
+            try:
+                await message.bot.copy_message(chat_id=client_id, from_chat_id=message.chat.id, message_id=message.message_id)
+            except Exception:
+                await message.bot.forward_message(chat_id=client_id, from_chat_id=message.chat.id, message_id=message.message_id)
+            return
+
+        # 2) если обычный пользователь (клиент)
+        active_user = await find_active_ticket_by_user(user_id)
+        if not active_user:
+            if text.lower() in ("поддержка", "/support"):
+                await support_request_handler(message)
+            return
+
+        ticket_id, admin_id = active_user
+        if text.lower() == "/end":
+            await close_ticket(ticket_id)
+            await message.answer("Вы завершили чат.", reply_markup=kb.get_main_menu())
+            await message.bot.send_message(admin_id, "Клиент завершил чат.", reply_markup=kb.get_main_menu())
+            return
+
+        try:
+            await message.bot.copy_message(chat_id=admin_id, from_chat_id=message.chat.id, message_id=message.message_id)
+        except Exception:
+            await message.bot.forward_message(chat_id=admin_id, from_chat_id=message.chat.id, message_id=message.message_id)
+
+    except Exception as e:
+        logger.exception(f"support_relay_messages error: {e}")
+
 
 
 @rt.message(F.text)
@@ -1463,4 +1710,5 @@ async def cmd_user_stats(message: Message, command: CommandObject):
     except Exception as e:
         logger.error(f"Ошибка в команде /user_stats: {e}", exc_info=True)
         await message.answer("Произошла ошибка при получении статистики по пользователю.")
+
 

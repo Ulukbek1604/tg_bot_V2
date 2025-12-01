@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher
-from bot_apps.handlers import rt
+from bot_apps.handlers import rt,init_support_db
 from bot_apps.db import init_db, close_db
 from bot_apps.config_reader import TOKEN
 
@@ -13,6 +13,7 @@ async def main():
     bot = Bot(token=TOKEN, parse_mode=None)
     dp = Dispatcher()
     dp.include_router(rt)
+
     await init_db()
     try:
         await dp.start_polling(bot)

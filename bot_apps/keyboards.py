@@ -144,3 +144,19 @@ def get_admin_analytics_menu() -> InlineKeyboardMarkup:
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+def support_admin_accept_kb(ticket_id: int) -> InlineKeyboardMarkup:
+    """Кнопки, которые отправляем админам при новом тикете."""
+    keyboard = [
+        [
+            InlineKeyboardButton(text="Принять", callback_data=f"support_accept:{ticket_id}"),
+            InlineKeyboardButton(text="Отклонить", callback_data=f"support_reject:{ticket_id}")
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def support_in_chat_kb() -> InlineKeyboardMarkup:
+    """Кнопка 'Завершить чат' для обеих сторон."""
+    keyboard = [
+        [InlineKeyboardButton(text="Завершить чат", callback_data="support_end")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
