@@ -1,199 +1,235 @@
+# bot_apps/db_user.py
 import aiosqlite
 import html
 import logging
 import re
+from datetime import datetime
+
 logger = logging.getLogger(__name__)
 
-async def add_steam_key_into_db(game_name, st_key, price, count, genre=None, region=None, image_urls=None):
-    try:
-        async with aiosqlite.connect('tg_bot.db') as db:
-            await db.execute('''
-                             INSERT INTO steam_keys (game_name, st_key, price, count, genre, region, image_urls)
-                             VALUES (?, ?, ?, ?, ?, ?, ?)
-                             ''', (game_name, st_key, price, count, genre, region, image_urls))
-            await db.commit()
-            logger.info(f"Добавлена игра: {game_name}, ключ: {st_key}, цена: {price}, количество: {count}")
-            return True, "Игра успешно добавлена."
-    except Exception as e:
-        logger.error(f"Ошибка добавления ключа в базу данных: {e}", exc_info=True)
-        return False, f"Ошибка добавления игры: {str(e)}"
 
-async def edit_steam_key_into_db(game_id, game_name=None, st_key=None, price=None, count=None, discount=None,
-                                 genre=None, region=None, image_urls=None):
-    """Редактирует Steam ключ в базе данных, обновляя только указанные параметры."""
-    try:
-        async with aiosqlite.connect('tg_bot.db') as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute('SELECT * FROM steam_keys WHERE id = ?', (game_id,))
-            game = await cursor.fetchone()
-            if not game:
-                logger.warning(f"Игра с ID {game_id} не найдена")
-                return False, "Игра с таким ID не найдена."
+async def _apply_sale_to_game(game) -> dict:
+    """Работает и с sqlite3.Row, и с dict — без ошибок"""
+    from datetime import datetime
+    import re
 
-            updates = []
-            params = []
-            if game_name is not None and game_name != '':
-                updates.append("game_name = ?")
-                params.append(game_name)
-            if st_key is not None and st_key != '':
-                updates.append("st_key = ?")
-                params.append(st_key)
-            if price is not None:
-                updates.append("price = ?")
-                params.append(price)
-            if count is not None:
-                updates.append("count = ?")
-                params.append(count)
-            if discount is not None:
-                updates.append("discount = ?")
-                params.append(discount)
-            if genre is not None and genre != '':
-                updates.append("genre = ?")
-                params.append(genre)
-            if region is not None and region != '':
-                updates.append("region = ?")
-                params.append(region)
-            if image_urls is not None and image_urls != '':
-                updates.append("image_urls = ?")
-                params.append(image_urls)
+    # Превращаем sqlite3.Row в обычный dict — теперь .get() работает
+    g = dict(game)
 
-            if not updates:
-                logger.warning("Не указаны параметры для обновления")
-                return False, "Не указаны параметры для обновления."
+    price = float(g.get('price', 0))
+    discount = int(g.get('discount', 0))
 
-            params.append(game_id)
-            query = f"UPDATE steam_keys SET {', '.join(updates)} WHERE id = ?"
-            await db.execute(query, params)
-            await db.commit()
-            logger.info(f"Игра с ID {game_id} успешно обновлена: {updates}")
-            return True, "Игра успешно обновлена."
-    except Exception as e:
-        logger.error(f"Ошибка редактирования ключа: {e}", exc_info=True)
-        return False, f"Ошибка редактирования игры: {str(e)}"
+    sale_active = bool(g.get('sale_active', 0))
+    sale_not = (g.get('sale_not') or "").strip()
+    sale_ends_at = g.get('sale_ends_at')
 
-async def delete_steam_key_from_db(game_id):
-    """Удаляет Steam ключ из базы данных."""
-    try:
-        async with aiosqlite.connect('tg_bot.db') as db:
-            cursor = await db.execute('SELECT * FROM steam_keys WHERE id = ?', (game_id,))
-            game = await cursor.fetchone()
-            if not game:
-                logger.warning(f"Игра с ID {game_id} не найдена")
-                return False, "Игра с таким ID не найдена."
-            await db.execute('DELETE FROM steam_keys WHERE id = ?', (game_id,))
-            await db.commit()
-            logger.info(f"Игра с ID {game_id} успешно удалена")
-            return True, "Игра успешно удалена."
-    except Exception as e:
-        logger.error(f"Ошибка удаления ключа: {e}", exc_info=True)
-        return False, f"Ошибка удаления игры: {str(e)}"
+    final_price = price
+    sale_text = ""
+
+    # Обычная скидка (поле discount)
+    if discount > 0 and not sale_active:
+        final_price = price * (1 - discount / 100)
+        sale_text = f"Скидка {discount}%"
+
+    # Новая акция
+    if sale_active and sale_not:
+        now = datetime.now()
+        expired = False
+
+        if sale_ends_at:
+            try:
+                if len(sale_ends_at) <= 10:
+                    end_dt = datetime.strptime(sale_ends_at, "%Y-%m-%d")
+                else:
+                    end_dt = datetime.strptime(sale_ends_at[:19], "%Y-%m-%d %H:%M:%S")
+                if now > end_dt:
+                    expired = True
+            except:
+                pass
+
+        if expired:
+            async with aiosqlite.connect('tg_bot.db') as db:
+                await db.execute(
+                    "UPDATE steam_keys SET sale_active = 0, sale_not = NULL, sale_ends_at = NULL WHERE id = ?",
+                    (g['id'],)
+                )
+                await db.commit()
+            sale_active = False
+        else:
+            match = re.search(r'(\d+)%', sale_not, re.IGNORECASE)
+            if match:
+                percent = int(match.group(1))
+                final_price = price * (1 - percent / 100)
+                end_date = sale_ends_at.split()[0] if sale_ends_at else "скоро"
+                sale_text = f"АКЦИЯ! {sale_not} до {end_date}"
+            else:
+                sale_text = f"АКЦИЯ! {sale_not}"
+
+    return {
+        "final_price": round(final_price, 2),
+        "sale_text": sale_text
+    }
+
 
 async def show_all_games():
-    """Возвращает список всех доступных игр."""
+    """Показать весь каталог"""
     try:
         async with aiosqlite.connect('tg_bot.db') as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute('SELECT * FROM steam_keys WHERE count > 0')
+            cursor = await db.execute('SELECT * FROM steam_keys WHERE count > 0 ORDER BY id')
             games = await cursor.fetchall()
+            games = [dict(row) for row in games]
             if not games:
-                logger.info("Игры не найдены в базе данных")
                 return False, "Игры не найдены.", []
 
             result = []
             for game in games:
-                price = game['price']
-                discount = game['discount'] or 0
-                final_price = price * (1.0 - discount / 100.0)
-                game_text = (
+                sale = await _apply_sale_to_game(game)
+                text = (
                     f"*ID*: {game['id']}\n"
                     f"*Игра*: {game['game_name']}\n"
-                    f"*Цена*: ${final_price:.2f}\n"
-                    f"*Скидка*: {discount}%\n"
-                    f"*Жанр*: {game['genre'] or 'Не указан'}\n"
-                    f"*Регион*: {game['region'] or 'Не указан'}"
+                    f"*Цена*: ${sale['final_price']:.2f}"
                 )
+                if sale['sale_text']:
+                    text += f"\n{sale['sale_text']}"
+                if game.get('genre'):
+                    text += f"\n*Жанр*: {game['genre']}"
+                if game.get('region'):
+                    text += f"\n*Регион*: {game['region'] or 'Глобальный'}"
+
                 result.append({
-                    'text': game_text,
-                    'image_urls': game['image_urls'] or ''
+                    'text': text,
+                    'image_urls': game.get('image_urls') or ''
                 })
-            logger.info(f"Найдено {len(games)} игр")
-            return True, "Игры найдены.", result
+
+            return True, "Доступные игры:", result
+
     except Exception as e:
-        logger.error(f"Ошибка получения списка игр: {e}", exc_info=True)
-        return False, f"Ошибка получения игр: {str(e)}", []
+        logger.error(f"Ошибка в show_all_games: {e}", exc_info=True)
+        return False, f"Ошибка: {str(e)}", []
+
+
+async def search_games(query):
+    """Поиск по названию или ID"""
+    try:
+        async with aiosqlite.connect('tg_bot.db') as db:
+            db.row_factory = aiosqlite.Row
+
+            if query.strip().isdigit():
+                game_id = int(query.strip())
+                cursor = await db.execute('SELECT * FROM steam_keys WHERE id = ? AND count > 0', (game_id,))
+            else:
+                cursor = await db.execute(
+                    'SELECT * FROM steam_keys WHERE game_name LIKE ? AND count > 0',
+                    (f'%{query.strip()}%',)
+                )
+
+            games = await cursor.fetchall()
+            games = [dict(row) for row in games]
+            if not games:
+                return False, "Игры не найдены.", []
+
+            result = []
+            for game in games:
+                sale = await _apply_sale_to_game(game)
+                text = (
+                    f"*ID*: {game['id']}\n"
+                    f"*Игра*: {game['game_name']}\n"
+                    f"*Цена*: ${sale['final_price']:.2f}"
+                )
+                if sale['sale_text']:
+                    text += f"\n{sale['sale_text']}"
+                if game.get('genre'):
+                    text += f"\n*Жанр*: {game['genre']}"
+                if game.get('region'):
+                    text += f"\n*Регион*: {game['region'] or 'Глобальный'}"
+
+                result.append({
+                    'text': text,
+                    'image_urls': game.get('image_urls') or ''
+                })
+
+            return True, "Результаты поиска:", result
+
+    except Exception as e:
+        logger.error(f"Ошибка в search_games: {e}", exc_info=True)
+        return False, f"Ошибка поиска: {str(e)}", []
+
 
 async def filter_games_by_price(price_limit):
     try:
         async with aiosqlite.connect('tg_bot.db') as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute('''
-                SELECT * FROM steam_keys 
-                WHERE count > 0 AND (price * (1.0 - discount / 100.0)) <= ?
-            ''', (float(price_limit),))
+            cursor = await db.execute(
+                'SELECT * FROM steam_keys WHERE count > 0 AND price <= ?',
+                (float(price_limit),)
+            )
             games = await cursor.fetchall()
+            games = [dict(row) for row in games]
+
             if not games:
-                logger.info(f"Игры с ценой до ${price_limit} не найдены")
-                return False, f"Игры с ценой до ${price_limit} не найдены.", []
+                return False, f"Игры до ${price_limit} не найдены.", []
 
             result = []
             for game in games:
-                price = game['price']
-                discount = game['discount'] or 0
-                final_price = price * (1.0 - discount / 100.0)
-                game_text = (
+                sale = await _apply_sale_to_game(game)
+                text = (
                     f"*ID*: {game['id']}\n"
                     f"*Игра*: {game['game_name']}\n"
-                    f"*Цена*: ${final_price:.2f}\n"
-                    f"*Скидка*: {discount}%\n"
-                    f"*Жанр*: {game['genre'] or 'Не указан'}\n"
-                    f"*Регион*: {game['region'] or 'Не указан'}"
+                    f"*Цена*: ${sale['final_price']:.2f}"
                 )
+                if sale['sale_text']:
+                    text += f"\n{sale['sale_text']}"
+
                 result.append({
-                    'text': game_text,
-                    'image_urls': game['image_urls'] or ''
+                    'text': text,
+                    'image_urls': game.get('image_urls') or ''
                 })
-            logger.info(f"Найдено {len(games)} игр с ценой до ${price_limit}")
-            return True, f"Игры с ценой до ${price_limit} найдены.", result
+
+            return True, f"Игры до ${price_limit}:", result
+
     except Exception as e:
-        logger.error(f"Ошибка фильтрации игр по цене: {e}", exc_info=True)
-        return False, f"Ошибка фильтрации игр: {str(e)}", []
+        logger.error(f"Ошибка в filter_games_by_price: {e}", exc_info=True)
+        return False, f"Ошибка: {str(e)}", []
+
 
 async def filter_games_by_genre(genre):
-
     try:
         async with aiosqlite.connect('tg_bot.db') as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute('''
-                SELECT * FROM steam_keys 
-                WHERE count > 0 AND genre = ?
-            ''', (genre,))
+            cursor = await db.execute(
+                'SELECT * FROM steam_keys WHERE count > 0 AND genre LIKE ?',
+                (f'%{genre}%',)
+            )
             games = await cursor.fetchall()
+            games = [dict(row) for row in games]
+
             if not games:
-                logger.info(f"Игры жанра '{genre}' не найдены")
                 return False, f"Игры жанра '{genre}' не найдены.", []
 
             result = []
             for game in games:
-                price = game['price']
-                discount = game['discount'] or 0
-                final_price = price * (1.0 - discount / 100.0)
-                game_text = (
+                sale = await _apply_sale_to_game(game)
+                text = (
                     f"*ID*: {game['id']}\n"
                     f"*Игра*: {game['game_name']}\n"
-                    f"*Цена*: ${final_price:.2f}\n"
-                    f"*Скидка*: {discount}%\n"
-                    f"*Жанр*: {game['genre'] or 'Не указан'}\n"
-                    f"*Регион*: {game['region'] or 'Не указан'}"
+                    f"*Цена*: ${sale['final_price']:.2f}"
                 )
+                if sale['sale_text']:
+                    text += f"\n{sale['sale_text']}"
+
                 result.append({
-                    'text': game_text,
-                    'image_urls': game['image_urls'] or ''
+                    'text': text,
+                    'image_urls': game.get('image_urls') or ''
                 })
-            logger.info(f"Найдено {len(games)} игр жанра '{genre}'")
-            return True, f"Игры жанра '{genre}' найдены.", result
+
+            return True, f"Игры жанра '{genre}':", result
+
     except Exception as e:
-        logger.error(f"Ошибка фильтрации игр по жанру: {e}", exc_info=True)
-        return False, f"Ошибка фильтрации игр: {str(e)}", []
+        logger.error(f"Ошибка в filter_games_by_genre: {e}", exc_info=True)
+        return False, f"Ошибка: {str(e)}", []
+
+
 
 async def search_games(query):
     """Поиск игр по названию или по ID."""
@@ -219,6 +255,7 @@ async def search_games(query):
                 logger.info(f"Поиск игр по названию: '{query_clean}'")
 
             games = await cursor.fetchall()
+            games = [dict(row) for row in games]
 
             if not games:
                 logger.info(f"Игры по запросу '{query}' не найдены")
@@ -339,7 +376,7 @@ async def cancel_order(order_id):
         logger.error(f"Ошибка отмены заказа: {e}", exc_info=True)
         return False, f"Ошибка отмены заказа: {str(e)}"
 
-async def get_pending_orders():
+async def get_pending_orders(games=None):
     """Возвращает список ожидающих заказов."""
     try:
         async with aiosqlite.connect('tg_bot.db') as db:
@@ -351,6 +388,7 @@ async def get_pending_orders():
                                       WHERE o.status = ?
                                       ''', ('pending',))
             orders = await cursor.fetchall()
+            games = [dict(row) for row in games]
             if not orders:
                 logger.info("Ожидающие заказы не найдены")
                 return False, "Ожидающие заказы не найдены.", []
