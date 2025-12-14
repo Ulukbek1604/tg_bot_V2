@@ -131,6 +131,6 @@ async def ensure_sale_columns():
             print("Все колонки акций уже существуют.")
 
 async def close_db():
-    """Пустая функция, так как соединения закрываются автоматически."""
+    """Пустая функция, так как соединения закрываются автоматически"""
     logger.debug("Database connections are managed automatically")
     pass

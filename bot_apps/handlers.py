@@ -510,7 +510,7 @@ async def cancel_order_callback(callback: CallbackQuery):
 
 @rt.message(Command('pending_orders'))
 async def pending_orders(message: Message):
-    """Обработчик команды /pending_orders для админов."""
+    """Обработчик команды /pending_orders для админов"""
     logger.info(f"Команда /pending_orders от пользователя {message.from_user.id}")
     try:
         if not await db_admin.is_admin(message.from_user.id):

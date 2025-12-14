@@ -219,11 +219,7 @@ async def get_daily_order_stats(limit: int = 7):
         logger.error(f"Ошибка при получении статистики по дням: {e}")
         return False, f"Ошибка при получении статистики по дням: {e}", []
 async def get_users_overview():
-    """
-    Сводка по всем пользователям:
-    user_id, количество заказов и разбор по статусам.
-    Возвращает: (success: bool, message: str, lines: list[str])
-    """
+
     try:
         async with aiosqlite.connect('tg_bot.db') as db:
             db.row_factory = aiosqlite.Row

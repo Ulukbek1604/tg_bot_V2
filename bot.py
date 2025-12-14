@@ -33,7 +33,7 @@ async def main():
     dp = Dispatcher()
     dp.include_router(rt)
 
-    # --- порядок инициализаций БД ---
+    # --- порядок инициализаций БД --
     await init_db()
     await ensure_full_database_structure()
     await ensure_sale_columns()

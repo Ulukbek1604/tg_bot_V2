@@ -10,7 +10,7 @@ def get_main_menu() -> ReplyKeyboardMarkup:
     ]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
-
+#
 def get_admin_main_menu(is_admin: bool):
     if not is_admin:
         return None

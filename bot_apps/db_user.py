@@ -359,7 +359,7 @@ async def confirm_order(order_id):
         return False, f"Ошибка подтверждения заказа: {str(e)}", None
 
 async def cancel_order(order_id):
-    """Отменяет заказ."""
+    """Отменяет заказ"""
     try:
         async with aiosqlite.connect('tg_bot.db') as db:
             cursor = await db.execute('SELECT * FROM orders WHERE id = ? AND status = ?', (order_id, 'pending'))
